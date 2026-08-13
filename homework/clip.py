@@ -101,14 +101,83 @@ class CLIP(nn.Module):
         super().__init__()
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
-        # TODO: implement the rest components
-        raise NotImplementedError("Not implemented")
+
+        vision_dim = vision_encoder.config.hidden_size
+        text_dim = text_encoder.config.hidden_size
+
+        self.vision_projection = nn.Linear(
+            vision_dim,
+            proj_dim,
+            bias=False,
+        )
+
+        self.text_projection = nn.Linear(
+            text_dim,
+            proj_dim,
+            bias=False,
+        )
+
+        self.temperature = temperature
+
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
-        return self.vision_encoder(image)
+        outputs = self.vision_encoder(pixel_values=image)
 
-    def encode_text(self, text: str) -> torch.Tensor:
-        return self.text_encoder(text)
+        # Vision encoder output:
+        # [batch, sequence_length, hidden_size]
+        hidden_states = outputs.last_hidden_state
+
+        # Use the first token as the image representation.
+        features = hidden_states[:, 0]
+
+        features = self.vision_projection(features)
+
+        # Normalize so dot product becomes cosine similarity.
+        features = features / features.norm(
+            dim=-1,
+            keepdim=True,
+        ).clamp_min(1e-8)
+
+        return features
+
+     def encode_text(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        
+        outputs = self.text_encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        hidden_states = outputs.last_hidden_state
+
+        if attention_mask is not None:
+            # Index of final non-padding token.
+            lengths = attention_mask.sum(dim=1).long() - 1
+
+            batch_indices = torch.arange(
+                hidden_states.shape[0],
+                device=hidden_states.device,
+            )
+
+            features = hidden_states[
+                batch_indices,
+                lengths,
+            ]
+        else:
+            features = hidden_states[:, -1]
+
+        features = self.text_projection(features)
+
+        # Normalize embeddings.
+        features = features / features.norm(
+            dim=-1,
+            keepdim=True,
+        ).clamp_min(1e-8)
+
+        return features
 
     def save_pretrained(self, save_directory: str, **kwargs):
         """Customize save method, save additional parameters"""
@@ -180,7 +249,17 @@ class CLIP(nn.Module):
         Returns:
             TODO: think about the what values should be returned
         """
-        raise NotImplementedError("Not implemented")
+        image_features = self.encode_image(pixel_values)
+
+        text_features = self.encode_text(
+            input_ids,
+            attention_mask,
+        )
+
+        # Pairwise image/text cosine similarities.
+        logits = image_features @ text_features.T
+
+        return image_features, text_features, logits
 
 
 def compute_clip_loss(
@@ -199,7 +278,50 @@ def compute_clip_loss(
     Returns:
         The loss for the CLIP model.
     """
-    raise NotImplementedError("Not implemented")
+
+    image_features, text_features, _ = outputs
+
+    # Similarity matrix:
+    #
+    #             text
+    #          0    1    2
+    # image 0  x    x    x
+    #       1  x    x    x
+    #       2  x    x    x
+    #
+    # Correct pairs are on the diagonal.
+    logits = image_features @ text_features.T
+
+    # Temperature scaling.
+    temperature = 0.07
+    logits = logits / temperature
+
+    batch_size = image_features.shape[0]
+
+    targets = torch.arange(
+        batch_size,
+        device=logits.device,
+    )
+
+    # Image -> text
+    image_to_text_loss = torch.nn.functional.cross_entropy(
+        logits,
+        targets,
+    )
+
+    # Text -> image
+    text_to_image_loss = torch.nn.functional.cross_entropy(
+        logits.T,
+        targets,
+    )
+
+    # Symmetric CLIP objective.
+    loss = (
+        image_to_text_loss +
+        text_to_image_loss
+    ) / 2
+
+    return loss
 
 
 def get_target_modules_for_lora(model: nn.Module) -> list[str]:

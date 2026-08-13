@@ -10,19 +10,83 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
     """
     Generate caption for a specific view.
     """
+    from .generate_qa import (
+        extract_kart_objects,
+        extract_track_info,
+    )
+
+    karts = extract_kart_objects(
+        info_path,
+        view_index,
+        img_width,
+        img_height,
+    )
+
+    track_name = extract_track_info(info_path)
+
+    captions = []
+
+    # ---------------------------------------------------------
     # 1. Ego car
-    # {kart_name} is the ego car.
+    # ---------------------------------------------------------
 
+    ego_kart = next(
+        (kart for kart in karts if kart["is_center_kart"]),
+        None,
+    )
+
+    if ego_kart is not None:
+        captions.append(
+            f"{ego_kart['kart_name']} is the ego car."
+        )
+
+    # ---------------------------------------------------------
     # 2. Counting
-    # There are {num_karts} karts in the scenario.
+    # ---------------------------------------------------------
 
-    # 3. Track name
-    # The track is {track_name}.
+    captions.append(
+        f"There are {len(karts)} karts in the scenario."
+    )
 
-    # 4. Relative position
-    # {kart_name} is {position} of the ego car.
+    # ---------------------------------------------------------
+    # 3. Track
+    # ---------------------------------------------------------
 
-    raise NotImplementedError("Not implemented")
+    captions.append(
+        f"The track is {track_name}."
+    )
+
+    # ---------------------------------------------------------
+    # 4. Relative positions
+    # ---------------------------------------------------------
+
+    if ego_kart is not None:
+        ego_x, ego_y = ego_kart["center"]
+
+        for kart in karts:
+            if kart["is_center_kart"]:
+                continue
+
+            kart_x, kart_y = kart["center"]
+
+            horizontal = (
+                "to the left"
+                if kart_x < ego_x
+                else "to the right"
+            )
+
+            vertical = (
+                "in front of"
+                if kart_y < ego_y
+                else "behind"
+            )
+
+            captions.append(
+                f"{kart['kart_name']} is {horizontal} and {vertical} "
+                "the ego car."
+            )
+
+    return captions
 
 
 def check_caption(info_file: str, view_index: int):
