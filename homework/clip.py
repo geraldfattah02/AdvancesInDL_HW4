@@ -140,12 +140,12 @@ class CLIP(nn.Module):
 
         return features
 
-     def encode_text(
+    def encode_text(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        
+
         outputs = self.text_encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
