@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .data import DATA_DIR
+
 # Define object type mapping
 OBJECT_TYPES = {
     1: "Kart",
@@ -477,16 +479,52 @@ def check_qa_pairs(info_file: str, view_index: int):
         print("-" * 50)
 
 
-"""
-Usage Example: Visualize QA pairs for a specific file and view:
-   python generate_qa.py check --info_file ../data/valid/00000_info.json --view_index 0
+def generate_all(split: str = "train", data_dir: str | None = None, output_file: str | None = None):
+    """
+    Generate QA pairs for all info files in a split and write them to JSON.
 
-You probably need to add additional commands to Fire below.
+    Args:
+        split: Dataset split subdirectory under data/ (e.g. "train")
+        data_dir: Root data directory (default: project data/)
+        output_file: Output JSON path (default: data/{split}/balanced_qa_pairs.json)
+    """
+    data_root = Path(data_dir) if data_dir else DATA_DIR
+    split_dir = data_root / split
+    output_path = Path(output_file) if output_file else split_dir / "balanced_qa_pairs.json"
+
+    all_qa_pairs = []
+    for info_file in sorted(split_dir.glob("*_info.json")):
+        base_name = info_file.stem.replace("_info", "")
+        for view_index in range(10):
+            image_file = split_dir / f"{base_name}_{view_index:02d}_im.jpg"
+            if not image_file.exists():
+                continue
+
+            for qa_pair in generate_qa_pairs(str(info_file), view_index):
+                all_qa_pairs.append(
+                    {
+                        "question": qa_pair["question"],
+                        "answer": qa_pair["answer"],
+                        "image_file": f"{split}/{image_file.name}",
+                    }
+                )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(all_qa_pairs, f, indent=2)
+
+    print(f"Wrote {len(all_qa_pairs)} QA pairs to {output_path}")
+
+
+"""
+Usage Examples:
+   python -m homework.generate_qa check --info_file data/valid/00000_info.json --view_index 0
+   python -m homework.generate_qa generate_all --split train
 """
 
 
 def main():
-    fire.Fire({"check": check_qa_pairs})
+    fire.Fire({"check": check_qa_pairs, "generate_all": generate_all})
 
 
 if __name__ == "__main__":
