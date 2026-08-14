@@ -137,25 +137,21 @@ def extract_kart_objects(
     info_path: str, view_index: int, img_width: int = 150, img_height: int = 100, min_box_size: int = 5
 ) -> list:
     """
-    Extract kart objects from the info.json file, including their center points and identify the ego kart.
+    Extract kart objects from the info.json file, including their center points and identify the center kart.
     Filters out karts that are out of sight (outside the image boundaries).
-
-    The ego kart is identified first by track_id == 0 (the player's kart).
-    If not found, falls back to the kart closest to the image center.
 
     Args:
         info_path: Path to the corresponding info.json file
         view_index: Index of the view to analyze
         img_width: Width of the image (default: 150)
         img_height: Height of the image (default: 100)
-        min_box_size: Minimum bounding box size to include a kart
 
     Returns:
         List of kart objects, each containing:
         - instance_id: The track ID of the kart
         - kart_name: The name of the kart
         - center: (x, y) coordinates of the kart's center
-        - is_center_kart: Boolean indicating if this is the ego kart
+        - is_center_kart: Boolean indicating if this is the kart closest to image center
     """
 
     with open(info_path) as f:
@@ -242,47 +238,21 @@ def extract_kart_objects(
             }
         )
 
-    # Identify ego kart: prefer track_id == 0 (the player's kart),
-    # fall back to closest kart to image center.
+    # Find the kart closest to the image center (Euclidean distance).
     if karts:
-        ego_kart = next((k for k in karts if k["instance_id"] == 0), None)
+        image_center = (img_width / 2, img_height / 2)
 
-        if ego_kart is not None:
-            ego_kart["is_center_kart"] = True
-        else:
-            image_center = (img_width / 2, img_height / 2)
-            closest = min(
-                karts,
-                key=lambda kart: (
-                    (kart["center"][0] - image_center[0]) ** 2
-                    + (kart["center"][1] - image_center[1]) ** 2
-                ) ** 0.5,
-            )
-            closest["is_center_kart"] = True
+        center_kart = min(
+            karts,
+            key=lambda kart: (
+                (kart["center"][0] - image_center[0]) ** 2
+                + (kart["center"][1] - image_center[1]) ** 2
+            ) ** 0.5,
+        )
+
+        center_kart["is_center_kart"] = True
 
     return karts
-
-
-def count_total_karts(info_path: str) -> int:
-    """
-    Count the total number of karts in the scenario from the info JSON,
-    regardless of visibility in any particular view.
-
-    Args:
-        info_path: Path to the info.json file
-
-    Returns:
-        Total number of karts in the scenario
-    """
-    with open(info_path) as f:
-        info = json.load(f)
-
-    if "karts" in info:
-        kart_info = info["karts"]
-        if isinstance(kart_info, (list, dict)):
-            return len(kart_info)
-
-    return 0
 
 
 def extract_track_info(info_path: str) -> str:
@@ -328,7 +298,7 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
     Returns:
         List of dictionaries, each containing a question and answer
     """
-
+    
     karts = extract_kart_objects(
         info_path,
         view_index,
@@ -337,12 +307,6 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
     )
 
     track_name = extract_track_info(info_path)
-
-    # Count total karts from the scenario metadata (not just visible ones).
-    total_karts = count_total_karts(info_path)
-    # Fall back to visible count if metadata is unavailable.
-    if total_karts == 0:
-        total_karts = len(karts)
 
     qa_pairs = []
 
@@ -364,13 +328,13 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
         )
 
     # ---------------------------------------------------------
-    # 2. Total number of karts (from scenario metadata)
+    # 2. Total number of karts
     # ---------------------------------------------------------
 
     qa_pairs.append(
         {
             "question": "How many karts are there in the scenario?",
-            "answer": str(total_karts),
+            "answer": str(len(karts)),
         }
     )
 
