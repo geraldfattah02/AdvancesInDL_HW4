@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import fire
 from matplotlib import pyplot as plt
 
+from .data import DATA_DIR
 from .generate_qa import draw_detections, extract_frame_info
 
 
@@ -111,16 +113,51 @@ def check_caption(info_file: str, view_index: int):
     plt.show()
 
 
-"""
-Usage Example: Visualize QA pairs for a specific file and view:
-   python generate_captions.py check --info_file ../data/valid/00000_info.json --view_index 0
+def generate_all(split: str = "train", data_dir: str | None = None, output_file: str | None = None):
+    """
+    Generate caption pairs for all info files in a split and write them to JSON.
 
-You probably need to add additional commands to Fire below.
+    Args:
+        split: Dataset split subdirectory under data/ (e.g. "train")
+        data_dir: Root data directory (default: project data/)
+        output_file: Output JSON path (default: data/{split}/balanced_captions.json)
+    """
+    data_root = Path(data_dir) if data_dir else DATA_DIR
+    split_dir = data_root / split
+    output_path = Path(output_file) if output_file else split_dir / "balanced_captions.json"
+
+    all_captions = []
+    for info_file in sorted(split_dir.glob("*_info.json")):
+        base_name = info_file.stem.replace("_info", "")
+        for view_index in range(10):
+            image_file = split_dir / f"{base_name}_{view_index:02d}_im.jpg"
+            if not image_file.exists():
+                continue
+
+            for caption in generate_caption(str(info_file), view_index):
+                all_captions.append(
+                    {
+                        "image_file": f"{split}/{image_file.name}",
+                        "caption": caption,
+                    }
+                )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(all_captions, f, indent=2)
+
+    print(f"Wrote {len(all_captions)} captions to {output_path}")
+
+
+"""
+Usage Examples:
+   python -m homework.generate_captions check --info_file data/valid/00000_info.json --view_index 0
+   python -m homework.generate_captions generate_all --split train
 """
 
 
 def main():
-    fire.Fire({"check": check_caption})
+    fire.Fire({"check": check_caption, "generate_all": generate_all})
 
 
 if __name__ == "__main__":
