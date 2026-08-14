@@ -152,7 +152,7 @@ def extract_kart_objects(
         - is_center_kart: Boolean indicating if this is the kart closest to image center
     """
 
-        with open(info_path) as f:
+    with open(info_path) as f:
         info = json.load(f)
 
     detections = info["detections"][view_index]
