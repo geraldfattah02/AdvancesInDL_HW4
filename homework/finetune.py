@@ -83,9 +83,9 @@ class VQADatasetForTraining(Dataset):
         input_ids = inputs["input_ids"].squeeze(0)
         attention_mask = inputs["attention_mask"].squeeze(0)
 
-        # Get answer length
-        answer_ids = self.processor(
-            images=None, text=item["answer"], return_tensors="pt", truncation=True
+        # Get answer length without running the full multimodal processor again.
+        answer_ids = self.processor.tokenizer(
+            item["answer"], return_tensors="pt", truncation=True
         ).input_ids.squeeze(0)
         answer_len = len(answer_ids)
 
@@ -110,7 +110,7 @@ class VQADatasetForTraining(Dataset):
 def train(
     data_dir: Path | None = None,
     train_dataset_name: str = "train",
-    output_dir: str = "vlm_sft",
+    output_dir: str = "vlm_model",
     num_train_epochs: int = 0.05,  # use only 0.05 epoch for training
     per_device_train_batch_size: int = 8,
     gradient_accumulation_steps: int = 4,
@@ -119,6 +119,7 @@ def train(
     lora_alpha: int = 32,
     lora_dropout: float = 0.0,
     num_workers: int = 16,
+    max_samples: int | None = None,
 ):
     """
     Fine-tune a VLM model using LoRA.
@@ -169,7 +170,7 @@ def train(
     model.train()
 
     # Prepare datasets
-    train_dataset = VQADataset(train_dataset_name, data_dir)
+    train_dataset = VQADataset(train_dataset_name, data_dir, max_samples=max_samples)
 
     train_dataset = VQADatasetForTraining(train_dataset, processor)
 
@@ -192,6 +193,7 @@ def train(
         save_total_limit=2,
         label_names=["labels"],
         dataloader_num_workers=num_workers,
+        dataloader_pin_memory=DEVICE == "cuda",
     )
 
     # Initialize trainer
@@ -200,6 +202,14 @@ def train(
         args=training_args,
         train_dataset=train_dataset,
         data_collator=custom_data_collator,
+    )
+
+    print(
+        f"Starting training: {len(train_dataset)} samples, "
+        f"batch size {per_device_train_batch_size}, "
+        f"grad accum {gradient_accumulation_steps}. "
+        "The first step can take several minutes while Colab loads images.",
+        flush=True,
     )
 
     # Train the model

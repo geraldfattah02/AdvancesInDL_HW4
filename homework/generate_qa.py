@@ -197,26 +197,17 @@ def extract_kart_objects(
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
 
-        # track_id == 0 is the ego kart.
-        # Other IDs need to be resolved through the kart mapping.
+        # Look up kart name from the karts list using track_id.
         kart_name = None
-
-        # The info file contains kart names for the detected instances.
-        # Different versions of the dataset may use either "karts" or
-        # "objects", so handle both.
         if "karts" in info:
             kart_info = info["karts"]
 
-            if isinstance(kart_info, dict):
-                kart_name = kart_info.get(str(track_id), kart_info.get(track_id))
+            if isinstance(kart_info, list) and 0 <= track_id < len(kart_info):
+                entry = kart_info[track_id]
+                kart_name = entry if isinstance(entry, str) else entry.get("name", entry.get("kart_name"))
 
-            elif isinstance(kart_info, list):
-                for kart in kart_info:
-                    if isinstance(kart, dict):
-                        kart_id = kart.get("id", kart.get("track_id", kart.get("instance_id")))
-                        if kart_id is not None and int(kart_id) == track_id:
-                            kart_name = kart.get("name", kart.get("kart_name"))
-                            break
+            elif isinstance(kart_info, dict):
+                kart_name = kart_info.get(str(track_id), kart_info.get(track_id))
 
         if kart_name is None and "objects" in info:
             objects = info["objects"]
@@ -247,7 +238,7 @@ def extract_kart_objects(
             }
         )
 
-    # Find the kart closest to the center of the image.
+    # Find the kart closest to the image center (Euclidean distance).
     if karts:
         image_center = (img_width / 2, img_height / 2)
 
@@ -256,7 +247,7 @@ def extract_kart_objects(
             key=lambda kart: (
                 (kart["center"][0] - image_center[0]) ** 2
                 + (kart["center"][1] - image_center[1]) ** 2
-            ),
+            ) ** 0.5,
         )
 
         center_kart["is_center_kart"] = True
@@ -386,11 +377,10 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
             right_count += 1
 
         if kart_y < ego_y:
-            vertical = "in front of"
+            vertical = "front"
             front_count += 1
         else:
-            vertical = "behind"
-
+            vertical = "back"
             behind_count += 1
 
         kart_name = kart["kart_name"]
@@ -412,7 +402,7 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
         qa_pairs.append(
             {
                 "question": f"Where is {kart_name} relative to the ego car?",
-                "answer": f"{horizontal} and {vertical}",
+                "answer": f"{vertical} and {horizontal}",
             }
         )
 
@@ -516,15 +506,91 @@ def generate_all(split: str = "train", data_dir: str | None = None, output_file:
     print(f"Wrote {len(all_qa_pairs)} QA pairs to {output_path}")
 
 
+def collect_qa_pairs(split: str, data_dir: Path | None = None) -> dict[tuple[str, str], str]:
+    """Generate QA pairs for a split and index them by (question, image_file)."""
+    data_root = data_dir or DATA_DIR
+    split_dir = data_root / split
+
+    qa_index: dict[tuple[str, str], str] = {}
+    for info_file in sorted(split_dir.glob("*_info.json")):
+        base_name = info_file.stem.replace("_info", "")
+        for view_index in range(10):
+            image_file = split_dir / f"{base_name}_{view_index:02d}_im.jpg"
+            if not image_file.exists():
+                continue
+
+            image_key = f"{split}/{image_file.name}"
+            for qa_pair in generate_qa_pairs(str(info_file), view_index):
+                qa_index[(qa_pair["question"], image_key)] = qa_pair["answer"]
+
+    return qa_index
+
+
+def validate(split: str = "valid", data_dir: str | None = None, reference_file: str | None = None):
+    """
+    Compare generated QA pairs against the grader reference file.
+
+    For every entry in balanced_qa_pairs.json that shares the same question and
+    image_file with generated data, the answer must match.
+    """
+    data_root = Path(data_dir) if data_dir else DATA_DIR
+    reference_path = Path(reference_file) if reference_file else data_root / "valid_grader" / "balanced_qa_pairs.json"
+
+    with open(reference_path) as f:
+        reference = json.load(f)
+
+    generated = collect_qa_pairs(split, data_root)
+
+    matched = 0
+    missing = 0
+    mismatched = []
+
+    for entry in reference:
+        key = (entry["question"], entry["image_file"])
+        expected = entry["answer"]
+
+        if key not in generated:
+            missing += 1
+            continue
+
+        if generated[key] == expected:
+            matched += 1
+        else:
+            mismatched.append(
+                {
+                    "image_file": entry["image_file"],
+                    "question": entry["question"],
+                    "expected": expected,
+                    "got": generated[key],
+                }
+            )
+
+    total = len(reference)
+    print(f"Reference entries: {total}")
+    print(f"Matched: {matched}/{total} ({100 * matched / total:.1f}%)")
+    print(f"Missing from generated data: {missing}")
+    print(f"Mismatched answers: {len(mismatched)}")
+
+    if mismatched:
+        print("\nFirst 10 mismatches:")
+        for item in mismatched[:10]:
+            print(f"  {item['image_file']} | {item['question']}")
+            print(f"    expected: {item['expected']}")
+            print(f"    got:      {item['got']}")
+
+    return matched, total, mismatched
+
+
 """
 Usage Examples:
    python -m homework.generate_qa check --info_file data/valid/00000_info.json --view_index 0
    python -m homework.generate_qa generate_all --split train
+   python -m homework.generate_qa validate --split valid
 """
 
 
 def main():
-    fire.Fire({"check": check_qa_pairs, "generate_all": generate_all})
+    fire.Fire({"check": check_qa_pairs, "generate_all": generate_all, "validate": validate})
 
 
 if __name__ == "__main__":

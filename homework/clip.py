@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+import math
+
 import torch
 import torch.nn as nn
 import torchvision as tv
@@ -83,7 +85,7 @@ class CaptionDatasetForTraining(Dataset):
         image = Image.open(item["image_path"]).convert("RGB")
         pixel_values = self.image_processor(image)
         text = item["caption"] + self.processor.tokenizer.eos_token
-        text_inputs = self.processor(text=text, return_tensors="pt", padding=True, truncation=True)
+        text_inputs = self.processor.tokenizer(text=text, return_tensors="pt", padding=True, truncation=True)
         input_ids = text_inputs["input_ids"].squeeze(0).long()
         attention_mask = text_inputs["attention_mask"].squeeze(0)
         return {
@@ -117,7 +119,9 @@ class CLIP(nn.Module):
             bias=False,
         )
 
-        self.temperature = temperature
+        # Learnable temperature: logits = exp(logit_scale) * cosine_similarity
+        # Initial value matches fixed tau=0.07 since exp(logit_scale) = 1/tau.
+        self.logit_scale = nn.Parameter(torch.tensor(math.log(1 / temperature)))
 
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
@@ -264,8 +268,8 @@ class CLIP(nn.Module):
             attention_mask,
         )
 
-        # Pairwise image/text cosine similarities.
-        logits = image_features @ text_features.T
+        # Pairwise image/text cosine similarities, scaled by learnable temperature.
+        logits = self.logit_scale.exp() * (image_features @ text_features.T)
 
         return image_features, text_features, logits
 
@@ -287,22 +291,7 @@ def compute_clip_loss(
         The loss for the CLIP model.
     """
 
-    image_features, text_features, _ = outputs
-
-    # Similarity matrix:
-    #
-    #             text
-    #          0    1    2
-    # image 0  x    x    x
-    #       1  x    x    x
-    #       2  x    x    x
-    #
-    # Correct pairs are on the diagonal.
-    logits = image_features @ text_features.T
-
-    # Temperature scaling.
-    temperature = 0.07
-    logits = logits / temperature
+    image_features, text_features, logits = outputs
 
     batch_size = image_features.shape[0]
 
@@ -311,13 +300,13 @@ def compute_clip_loss(
         device=logits.device,
     )
 
-    # Image -> text
+    # Image -> text (rows)
     image_to_text_loss = torch.nn.functional.cross_entropy(
         logits,
         targets,
     )
 
-    # Text -> image
+    # Text -> image (columns)
     text_to_image_loss = torch.nn.functional.cross_entropy(
         logits.T,
         targets,
@@ -348,12 +337,13 @@ def get_target_modules_for_lora(model: nn.Module) -> list[str]:
 
 def train(
     data_dir: Path | None = None,
-    output_dir: str = "clip",
+    output_dir: str = "clip_model",
     num_train_epochs: float = 0.05,  # for debugging purpose, increase this once the dry run works
     per_device_train_batch_size: int = 1024,
     gradient_accumulation_steps: int = 1,
     learning_rate: float = 5e-4,
     num_workers: int = 16,
+    max_samples: int | None = None,
 ):
     vlm = BaseVLM()
 
@@ -384,14 +374,12 @@ def train(
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     model.to(device)
-    if device == "cuda":
-        model = model.to(dtype=torch.bfloat16)
     model.train()
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
     # load dataset
-    train_dataset = CaptionDataset("train", data_dir)
+    train_dataset = CaptionDataset("train", data_dir, max_samples=max_samples)
     train_dataset = CaptionDatasetForTraining(train_dataset, processor)
 
     training_args = TrainingArguments(
@@ -410,6 +398,7 @@ def train(
         save_total_limit=2,
         label_names=["labels"],
         dataloader_num_workers=num_workers,
+        dataloader_pin_memory=device == "cuda",
     )
 
     trainer = Trainer(
@@ -418,6 +407,14 @@ def train(
         train_dataset=train_dataset,
         data_collator=clip_data_collator,
         compute_loss_func=compute_clip_loss,
+    )
+
+    print(
+        f"Starting training: {len(train_dataset)} samples, "
+        f"batch size {per_device_train_batch_size}, "
+        f"grad accum {gradient_accumulation_steps}. "
+        "The first step can take several minutes while Colab loads images.",
+        flush=True,
     )
 
     trainer.train()
