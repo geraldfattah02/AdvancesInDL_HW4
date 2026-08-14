@@ -121,6 +121,9 @@ class CLIP(nn.Module):
 
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
+        param = next(self.vision_encoder.parameters())
+        image = image.to(device=param.device, dtype=param.dtype)
+
         outputs = self.vision_encoder(pixel_values=image)
 
         # Vision encoder output:
@@ -145,6 +148,11 @@ class CLIP(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+
+        param = next(self.text_encoder.parameters())
+        input_ids = input_ids.to(device=param.device)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=param.device)
 
         outputs = self.text_encoder(
             input_ids=input_ids,
@@ -360,7 +368,7 @@ def train(
     # Initialize model and processor
     vision_encoder = vlm.model.model.vision_model
     text_encoder = vlm.model.model.text_model
-    model = CLIP(vision_encoder, text_encoder).to(device).bfloat16()
+    model = CLIP(vision_encoder, text_encoder).to(device)
     model.set_trainable_parameters()
 
     peft_config = LoraConfig(
@@ -376,6 +384,8 @@ def train(
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     model.to(device)
+    if device == "cuda":
+        model = model.to(dtype=torch.bfloat16)
     model.train()
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
